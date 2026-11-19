@@ -17,12 +17,12 @@ Siga este passo a passo simples para rodar a aplicação:
 **1. Clone o repositório (ou extraia os arquivos do projeto na sua máquina)**
 Abra o terminal e digite:
 ```bash
-git clone https://github.com/caiojosegp/contas-pagar-receber.git
+git clone https://github.com/guilherme22112/contas-a-pagar.git
 ```
 
 **2. Acesse a pasta do projeto**
 ```bash
-cd contas-pagar-receber
+cd contas-a-pagar
 ```
 
 **3. Execute a aplicação**
