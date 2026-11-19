@@ -1,32 +1,61 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom';
+import { FluxoCaixaChart } from './components/charts/FluxoCaixaChart';
 import { ContasPagarView } from './components/ContasPagarView';
 import { ContasReceberView } from './components/ContasReceberView';
 import { DashboardView } from './components/DashboardView';
 import { ErrorBanner } from './components/ErrorBanner';
 import { PessoasView } from './components/PessoasView';
 import { PlanoContasView } from './components/PlanoContasView';
-import { api, ApiError } from './services/api';
 import {
-  ContaPagar,
-  ContaReceber,
-  FiltroContas,
-  Pessoa,
-  PlanoConta,
-} from './types/cpr';
+  cprKeys,
+  useContasPagar,
+  useContasReceber,
+  usePessoas,
+  usePlanosConta,
+} from './hooks/useCprQueries';
+import { FiltroContas } from './types/cpr';
 
-type TabKey = 'dashboard' | 'pagar' | 'receber' | 'pessoas' | 'planos';
+const ROTAS = {
+  dashboard: '/',
+  pagar: '/contas-pagar',
+  receber: '/contas-receber',
+  pessoas: '/pessoas',
+  planos: '/plano-contas',
+} as const;
+
+type TabKey = keyof typeof ROTAS;
+
+const navClass = ({ isActive }: { isActive: boolean }) =>
+  `nav-item ${isActive ? 'active' : ''}`;
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  const [contasPagar, setContasPagar] = useState<ContaPagar[]>([]);
-  const [contasReceber, setContasReceber] = useState<ContaReceber[]>([]);
-  const [pessoas, setPessoas] = useState<Pessoa[]>([]);
-  const [planosConta, setPlanosConta] = useState<PlanoConta[]>([]);
+  // Filtros das listagens ficam aqui; mudar o filtro muda a chave da query
+  // e o TanStack Query busca os dados de novo sozinho.
+  const [filtroPagar, setFiltroPagar] = useState<FiltroContas | undefined>();
+  const [filtroReceber, setFiltroReceber] = useState<FiltroContas | undefined>();
 
-  const [loading, setLoading] = useState<boolean>(true);
-  const [apiOnline, setApiOnline] = useState<boolean>(true);
-  const [globalError, setGlobalError] = useState<ApiError | Error | null>(null);
+  const contasPagarQ = useContasPagar(filtroPagar);
+  const contasReceberQ = useContasReceber(filtroReceber);
+  const pessoasQ = usePessoas();
+  const planosQ = usePlanosConta();
+  const queries = [contasPagarQ, contasReceberQ, pessoasQ, planosQ];
+
+  const contasPagar = contasPagarQ.data ?? [];
+  const contasReceber = contasReceberQ.data ?? [];
+  const pessoas = pessoasQ.data ?? [];
+  const planosConta = planosQ.data ?? [];
+
+  const loading = queries.some((q) => q.isLoading || q.isFetching);
+  const apiOnline = queries.some((q) => q.isSuccess);
+  const queryError = queries.find((q) => q.error)?.error ?? null;
+  const [errorDismissed, setErrorDismissed] = useState<Error | null>(null);
+  const globalError = queryError && queryError !== errorDismissed ? queryError : null;
+
   const [isPlayingAudio, setIsPlayingAudio] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -48,102 +77,22 @@ export const App: React.FC = () => {
     }
   };
 
-  const loadAllData = useCallback(async () => {
-    setLoading(true);
-    setGlobalError(null);
-
-    const results = await Promise.allSettled([
-      api.listarContasPagar(),
-      api.listarContasReceber(),
-      api.listarPessoas(),
-      api.listarPlanosConta(),
-    ]);
-
-    let firstError: ApiError | Error | null = null;
-    let anySuccess = false;
-
-    if (results[0].status === 'fulfilled') {
-      setContasPagar(results[0].value);
-      anySuccess = true;
-    } else {
-      firstError = results[0].reason as Error;
-    }
-
-    if (results[1].status === 'fulfilled') {
-      setContasReceber(results[1].value);
-      anySuccess = true;
-    } else if (!firstError) {
-      firstError = results[1].reason as Error;
-    }
-
-    if (results[2].status === 'fulfilled') {
-      setPessoas(results[2].value);
-      anySuccess = true;
-    } else if (!firstError) {
-      firstError = results[2].reason as Error;
-    }
-
-    if (results[3].status === 'fulfilled') {
-      setPlanosConta(results[3].value);
-      anySuccess = true;
-    } else if (!firstError) {
-      firstError = results[3].reason as Error;
-    }
-
-    setApiOnline(anySuccess);
-    if (firstError) {
-      setGlobalError(firstError);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    void loadAllData();
-  }, [loadAllData]);
+  // Invalida todo o cache do CPR: listas, cadastros e dashboard se atualizam juntos.
+  const refreshAll = async () => {
+    await queryClient.invalidateQueries({ queryKey: cprKeys.all });
+  };
 
   const handleRefreshContasPagar = async (filtro?: FiltroContas) => {
-    setLoading(true);
-    try {
-      const [cp, ps, pl] = await Promise.all([
-        api.listarContasPagar(filtro),
-        api.listarPessoas(),
-        api.listarPlanosConta(),
-      ]);
-      setContasPagar(cp);
-      setPessoas(ps);
-      setPlanosConta(pl);
-      setApiOnline(true);
-    } catch (err) {
-      setGlobalError(
-        err instanceof Error ? err : new Error('Erro ao buscar contas a pagar.')
-      );
-    } finally {
-      setLoading(false);
-    }
+    setFiltroPagar(filtro);
+    await refreshAll();
   };
 
   const handleRefreshContasReceber = async (filtro?: FiltroContas) => {
-    setLoading(true);
-    try {
-      const [cr, ps, pl] = await Promise.all([
-        api.listarContasReceber(filtro),
-        api.listarPessoas(),
-        api.listarPlanosConta(),
-      ]);
-      setContasReceber(cr);
-      setPessoas(ps);
-      setPlanosConta(pl);
-      setApiOnline(true);
-    } catch (err) {
-      setGlobalError(
-        err instanceof Error
-          ? err
-          : new Error('Erro ao buscar contas a receber.')
-      );
-    } finally {
-      setLoading(false);
-    }
+    setFiltroReceber(filtro);
+    await refreshAll();
   };
+
+  const goTo = (tab: TabKey) => navigate(ROTAS[tab]);
 
   return (
     <div className="app-shell">
@@ -164,51 +113,31 @@ export const App: React.FC = () => {
 
         <nav className="sidebar-nav">
           <span className="nav-section-label">Menu Principal</span>
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dashboard')}
-          >
+          <NavLink to={ROTAS.dashboard} className={navClass} end>
             <span className="nav-icon">📊</span>
             <span>Dashboard Financeiro</span>
-          </button>
+          </NavLink>
 
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'pagar' ? 'active' : ''}`}
-            onClick={() => setActiveTab('pagar')}
-          >
+          <NavLink to={ROTAS.pagar} className={navClass}>
             <span className="nav-icon">💸</span>
             <span>Contas a Pagar</span>
-          </button>
+          </NavLink>
 
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'receber' ? 'active' : ''}`}
-            onClick={() => setActiveTab('receber')}
-          >
+          <NavLink to={ROTAS.receber} className={navClass}>
             <span className="nav-icon">💰</span>
             <span>Contas a Receber</span>
-          </button>
+          </NavLink>
 
           <span className="nav-section-label">Cadastros Base</span>
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'pessoas' ? 'active' : ''}`}
-            onClick={() => setActiveTab('pessoas')}
-          >
+          <NavLink to={ROTAS.pessoas} className={navClass}>
             <span className="nav-icon">👥</span>
             <span>Pessoas (Cli / Forn)</span>
-          </button>
+          </NavLink>
 
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'planos' ? 'active' : ''}`}
-            onClick={() => setActiveTab('planos')}
-          >
+          <NavLink to={ROTAS.planos} className={navClass}>
             <span className="nav-icon">📂</span>
             <span>Plano de Contas</span>
-          </button>
+          </NavLink>
         </nav>
 
         <div className="sidebar-footer">
@@ -233,59 +162,81 @@ export const App: React.FC = () => {
         <main className="page-container">
           <ErrorBanner
             error={globalError}
-            onClose={() => setGlobalError(null)}
+            onClose={() => setErrorDismissed(queryError)}
           />
 
-          {activeTab === 'dashboard' && (
-            <DashboardView
-              contasPagar={contasPagar}
-              contasReceber={contasReceber}
-              pessoas={pessoas}
-              planosConta={planosConta}
-              loading={loading}
-              onNavigate={(tab) => setActiveTab(tab)}
+          <Routes>
+            <Route
+              path={ROTAS.dashboard}
+              element={
+                <>
+                  <DashboardView
+                    contasPagar={contasPagar}
+                    contasReceber={contasReceber}
+                    pessoas={pessoas}
+                    planosConta={planosConta}
+                    loading={loading}
+                    onNavigate={goTo}
+                  />
+                  <div style={{ marginTop: 24 }}>
+                    <FluxoCaixaChart
+                      contasPagar={contasPagar}
+                      contasReceber={contasReceber}
+                    />
+                  </div>
+                </>
+              }
             />
-          )}
-
-          {activeTab === 'pagar' && (
-            <ContasPagarView
-              contas={contasPagar}
-              pessoas={pessoas}
-              planosConta={planosConta}
-              loading={loading}
-              onRefresh={handleRefreshContasPagar}
+            <Route
+              path={ROTAS.pagar}
+              element={
+                <ContasPagarView
+                  contas={contasPagar}
+                  pessoas={pessoas}
+                  planosConta={planosConta}
+                  loading={loading}
+                  onRefresh={handleRefreshContasPagar}
+                />
+              }
             />
-          )}
-
-          {activeTab === 'receber' && (
-            <ContasReceberView
-              contas={contasReceber}
-              pessoas={pessoas}
-              planosConta={planosConta}
-              loading={loading}
-              onRefresh={handleRefreshContasReceber}
+            <Route
+              path={ROTAS.receber}
+              element={
+                <ContasReceberView
+                  contas={contasReceber}
+                  pessoas={pessoas}
+                  planosConta={planosConta}
+                  loading={loading}
+                  onRefresh={handleRefreshContasReceber}
+                />
+              }
             />
-          )}
-
-          {activeTab === 'pessoas' && (
-            <PessoasView
-              pessoas={pessoas}
-              contasPagar={contasPagar}
-              contasReceber={contasReceber}
-              loading={loading}
-              onRefresh={loadAllData}
+            <Route
+              path={ROTAS.pessoas}
+              element={
+                <PessoasView
+                  pessoas={pessoas}
+                  contasPagar={contasPagar}
+                  contasReceber={contasReceber}
+                  loading={loading}
+                  onRefresh={refreshAll}
+                />
+              }
             />
-          )}
-
-          {activeTab === 'planos' && (
-            <PlanoContasView
-              planos={planosConta}
-              contasPagar={contasPagar}
-              contasReceber={contasReceber}
-              loading={loading}
-              onRefresh={loadAllData}
+            <Route
+              path={ROTAS.planos}
+              element={
+                <PlanoContasView
+                  planos={planosConta}
+                  contasPagar={contasPagar}
+                  contasReceber={contasReceber}
+                  loading={loading}
+                  onRefresh={refreshAll}
+                />
+              }
             />
-          )}
+            <Route path="*" element={<Navigate to={ROTAS.dashboard} replace />} />
+          </Routes>
         </main>
       </div>
     </div>
